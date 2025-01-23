@@ -1,5 +1,8 @@
 ## Attention mechanism
-1. Group-Query Attention (https://arxiv.org/pdf/2305.13245)
-2. Multi-Head Latent Attention (DeepSeek-v2 https://arxiv.org/pdf/2405.04434)
+1. [Group-Query Attention](https://arxiv.org/pdf/2305.13245)
+2. [Multi-Head Latent Attention - DeepSeek-v2](https://arxiv.org/pdf/2405.04434)
+
+## Getting Started with Agents
+1. [ReAct: Synergizing Reasoning and Acting in Language Models](https://arxiv.org/abs/2210.03629)
 
 ## Add the papers corresponding to Reasoning based LLMs
