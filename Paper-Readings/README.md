@@ -8,4 +8,7 @@
 ## Getting Started with Agents
 1. [ReAct: Synergizing Reasoning and Acting in Language Models](https://arxiv.org/abs/2210.03629)
 
+## Multi-lingual
+1. [SigLIP 2: A better multilingual vision language encoder](https://huggingface.co/blog/siglip2)
+
 ## Add the papers corresponding to Reasoning based LLMs
