@@ -57,7 +57,29 @@ def generate(prompt: str, uncond_prompt: str,
                                                         ).input_ids
             cond_tokens = cond_tokens.clone().to(device=device, dtype=torch.long)
             cond_context = clip(cond_tokens)
+            # Unconditional prompt and tokens
+            uncond_tokens = tokenizer.batch_encode_plus([uncond_prompt],
+                                                        padding="max_length",
+                                                        max_length=77,
+                                                        return_tensors="pt"
+                                                        ).input_ids
+            uncond_tokens = uncond_tokens.clone().to(device=device, dtype=torch.long)
+            uncond_context = clip(uncond_tokens)
 
+            # Concatenate conditional and unconditional contexts along batch dimension
+            context = torch.cat([uncond_context, cond_context], dim=0)
+        else:
+            tokens = tokenizer.batch_encode_plus([prompt],
+                                                padding="max_length",
+                                                max_length=77,
+                                                return_tensors="pt"
+                                                ).input_ids
+            tokens = tokens.clone().to(device=device, dtype=torch.long)
+            context = clip(tokens)
+
+        # This looks like an attempt to move the context to the idle device when not in use.
+        # Moving to the CPU seems like a cost on latency.
+        to_idle(context)
 
 
 if __name__ == "__main__":
