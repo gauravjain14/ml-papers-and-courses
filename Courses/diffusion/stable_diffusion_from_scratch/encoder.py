@@ -6,8 +6,7 @@ import torch.nn.functional as F
 from decoder import VAE_ResidualBlock, VAE_AttentionBlock
 
 
-class VAE_Encoder(nn.Module):
-    
+class VAE_Encoder(nn.Sequential):
     # VAE_ResidualBlock is defined in decoder.py
     def __init__(self):
         super().__init__(
@@ -25,6 +24,7 @@ class VAE_Encoder(nn.Module):
             VAE_ResidualBlock(512, 512),
             VAE_ResidualBlock(512, 512),
             VAE_AttentionBlock(512),
+            VAE_ResidualBlock(512, 512),
             nn.GroupNorm(32, 512),
             nn.SiLU(),
             nn.Conv2d(512, 8, kernel_size=3, padding=1),

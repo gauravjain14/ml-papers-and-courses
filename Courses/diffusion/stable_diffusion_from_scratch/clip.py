@@ -23,36 +23,37 @@ class CLIPEmbedding(nn.Module):
 class CLIPLayer(nn.Module):
     def __init__(self, embedding_dim: int, num_heads: int):
         super().__init__()
-        self.layernorm1 = nn.LayerNorm(embedding_dim)
+        self.layernorm_1 = nn.LayerNorm(embedding_dim)
         self.attention = SelfAttention(num_heads, embedding_dim)
-        self.layernorm2 = nn.LayerNorm(embedding_dim)
-        self.linear1 = nn.Linear(embedding_dim, 4 * embedding_dim)
-        self.linear2 = nn.Linear(4 * embedding_dim, embedding_dim)
+        self.layernorm_2 = nn.LayerNorm(embedding_dim)
+        self.linear_1 = nn.Linear(embedding_dim, 4 * embedding_dim)
+        self.linear_2 = nn.Linear(4 * embedding_dim, embedding_dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         residual = x
-        x = self.layernorm1(x)
+        x = self.layernorm_1(x)
         x = self.attention(x, causal_mask=True)
         x += residual
 
         # Feed Forward Layer
         residual = x
-        x = self.layernorm2(x)
-        x = self.linear1(x)
+        x = self.layernorm_2(x)
+        x = self.linear_1(x)
         
         # Quick GELU activation
         x = x * torch.sigmoid(1.702 * x)
-        x = self.linear2(x)
+        x = self.linear_2(x)
         x += residual
         return x
 
 
 class CLIP(nn.Module):
     def __init__(self):
+        super().__init__()
         self.embedding = CLIPEmbedding(49408, 768, 77)
 
-        self.layers = nn.Module([
-            CLIPLayer(12, 768) for _ in range(12)
+        self.layers = nn.ModuleList([
+            CLIPLayer(768, 12) for _ in range(12)
         ])
 
         self.layernorm = nn.LayerNorm(768)
