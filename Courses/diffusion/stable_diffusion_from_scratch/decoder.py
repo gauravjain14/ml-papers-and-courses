@@ -26,9 +26,9 @@ class VAE_ResidualBlock(nn.Module):
         x = F.silu(x)
         x = self.conv_1(x)
 
-        x = self.groupnorm2(x)
+        x = self.groupnorm_2(x)
         x = F.silu(x)
-        x = self.conv2(x)
+        x = self.conv_2(x)
 
         x = x + self.residual_layer(residual)
         return x

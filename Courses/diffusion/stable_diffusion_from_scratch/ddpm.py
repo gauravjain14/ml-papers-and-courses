@@ -14,105 +14,85 @@ class DDPMSampler:
                  beta_schedule: str="linear",
             ):
         # Forward pass adds noise based on the beta schedule
-        # Hugging Face calls this scaled linear schedule
-        self.betas = torch.linspace(beta_start ** 0.5, beta_end ** 0.5,
-                                    num_training_steps, device=device) ** 2
+        # Linear schedule as used in the original DDPM paper
+        self.betas = torch.linspace(beta_start, beta_end, num_training_steps, device=device)
         self.alphas = 1.0 - self.betas
-        # [alpha_0, alpha_0 * alpha_1, alpha_0 * alpha_1 * alpha_2, ...]
         self.alpha_cumprod = torch.cumprod(self.alphas, dim=0)
+        self.sqrt_alpha_cumprod = torch.sqrt(self.alpha_cumprod)
+        self.sqrt_one_minus_alpha_cumprod = torch.sqrt(1 - self.alpha_cumprod)
+        
         self.generator = generator
         self.num_training_steps = num_training_steps
         self.device = device
         self.one = torch.tensor(1.0, device=device)
-        self.timesteps = torch.arange(0, num_training_steps, device=device)[::-1]
+        self.timesteps = torch.from_numpy(np.arange(0, num_training_steps)[::-1].copy())
 
     def set_inference_timesteps(self, num_inference_steps: int):
         self.num_inference_steps = num_inference_steps
-        # 999, 998, 997, ... 0
-        # If we want to reduce the number of inference steps, to say 50 - 
-        # 999, 979, 959, ... 0 = 50 steps
         step_ratio = self.num_training_steps // self.num_inference_steps
-        self.timesteps = (np.arange(0, num_inference_steps) * step_ratio).round().long()[::-1]
-        self.timesteps = torch.from_numpy(self.timesteps).to(self.device)
+        timesteps = (np.arange(0, num_inference_steps) * step_ratio).round()[::-1].copy().astype(np.int64)
+        self.timesteps = torch.from_numpy(timesteps)
 
     def _get_previous_timestep(self, timestep: int) -> int:
         prev_t = timestep - (self.num_training_steps // self.num_inference_steps)
-        if prev_t < 0:
-            prev_t = 0
-        return prev_t
+        return max(prev_t, 0)
+    
+    def set_strength(self, strength=1):
+        start_step = self.num_inference_steps - int(self.num_inference_steps * strength)
+        self.timesteps = self.timesteps[start_step:]
+        self.start_step = start_step
 
     def step(self, timestep: int, latents: torch.Tensor, model_output: torch.Tensor) -> torch.Tensor:
-        # latents - the Unet operats on the latents and predictrs the noise which is the
-        # model_output - epsilon_theta(x_t, t)
         t = timestep
-        # prev_timestep is the next timestep, in reverse diffusion process
         prev_timestep = self._get_previous_timestep(t)
+        
+        # Get alphas for current and previous timestep
         alpha_prod_t = self.alpha_cumprod[t]
         alpha_prod_t_prev = self.alpha_cumprod[prev_timestep] if prev_timestep >= 0 else self.one
-
-        # I don't think it is correct to use beta_prod as 1 - alpha_prod.
-        # beta = 1 - alpha; alpha_prod = prod of alphas till t.
-        # thus, beta_prod = prod of betas till t = product [1-alpha_0, 1-alpha_1, ... 1-alpha_t]
-        # which is not the same as 1 - alpha_prod_t.
         beta_prod_t = 1 - alpha_prod_t
         beta_prod_t_prev = 1 - alpha_prod_t_prev
-        # Took a minute but I got what I was missing - the difference in notations for
-        # cumulative product of alphas and betas and the values at each timestep.
+        
+        # Current timestep values
         current_alpha_t = alpha_prod_t / alpha_prod_t_prev
-        current_beta_t = beta_prod_t / beta_prod_t_prev
+        current_beta_t = 1 - current_alpha_t
         
-        # There are two ways to go from more noisy image to less noisy image
-        # Algorithm 2 in the paper and Equation 6-7.
-        # q(xt-1|xt,x0) is conditioned on x0 which is the original image. Since this is not
-        # available, Equation 15 provides a way to predict x0 from xt.
-        pred_original_sample = (latents - (beta_prod_t ** 0.5) * model_output) / alpha_prod_t ** 0.5
-
-        # Compute the coefficients for the current sample x_t and the predicted x0
-        # coefficient of predicted original sample is sqrt(prod of alpha till t-1) * beta for the
-        # current timestep / (1 - prod of alpha till t)
-        pred_original_sample_coeff = (alpha_prod_t_prev ** 0.5) * current_beta_t / beta_prod_t
-        curr_sample_coeff = (alpha_prod_t ** 0.5) * (1 - beta_prod_t_prev) / beta_prod_t
-        mean = pred_original_sample_coeff * pred_original_sample + curr_sample_coeff * latents
-        # From the image, the variance is calculated as tilde_beta_t = (1 - alpha_cumprod_{t-1})/(1 - alpha_cumprod_t) * beta_t
-        # This is equivalent to: (1 - alpha_prod_t_prev)/(1 - alpha_prod_t) * current_beta_t
-        variance = ((1 - alpha_prod_t_prev) / (1 - alpha_prod_t)) * current_beta_t
-        # Why clamping the variance?
-        variance = torch.clamp(variance, min=1e-20)
-
+        # Predict x_0 from current latent and predicted noise
+        pred_original_sample = (latents - self.sqrt_one_minus_alpha_cumprod[t] * model_output) / self.sqrt_alpha_cumprod[t]
+        pred_original_sample = pred_original_sample.clamp(-1, 1)
+        
+        # Compute coefficients for the mean
+        pred_original_sample_coeff = alpha_prod_t_prev.sqrt() * current_beta_t / beta_prod_t
+        current_sample_coeff = current_alpha_t.sqrt() * beta_prod_t_prev / beta_prod_t
+        
+        # Compute mean of the posterior distribution
+        mean = pred_original_sample_coeff * pred_original_sample + current_sample_coeff * latents
+        
+        # Compute variance
+        variance = current_beta_t * beta_prod_t_prev / beta_prod_t
+        variance = torch.clamp(variance, min=1e-10)  # Less aggressive clamping
+        
+        # Add noise only if not the last step
         if t > 0:
-            device = model_output.device
-            noise = torch.randn(model_output.shape, device=device, dtype=model_output.dtype, generator=self.generator)
-            std = torch.sqrt(variance) * noise
+            noise = torch.randn(model_output.shape, device=latents.device, dtype=latents.dtype, generator=self.generator)
+            std = variance.sqrt() * noise
+            return mean + std
         
-        # Now, sample from the distribution, assuming initial distribution is N(0,1)
-        # This is equivalent to: mean + std * Z, where Z ~ N(0,1)
-        pred_prev_sample = mean + std * noise
-        return pred_prev_sample
+        return mean
 
     def add_noise(self, original_samples: torch.FloatTensor, timesteps: torch.IntTensor) -> torch.FloatTensor:
-        alpha_cumprod = self.alpha_cumprod.to(device=original_samples.device, dtype=original_samples.dtype)
         timesteps = timesteps.to(original_samples.device)
-
-        sqrt_alpha_prod = alpha_cumprod[timesteps] ** 0.5
-        sqrt_alpha_prod = sqrt_alpha_prod.flatten()
-
-        while len(sqrt_alpha_prod) < len(original_samples):
-            sqrt_alpha_prod = sqrt_alpha_prod.unsqueeze(-1)
+        sqrt_alpha_prod = self.sqrt_alpha_cumprod[timesteps].flatten()
+        sqrt_one_minus_alpha_prod = self.sqrt_one_minus_alpha_cumprod[timesteps].flatten()
         
-        # We want the standard deviation of the noise
-        sqrt_one_minus_alpha_prod = ((1 - alpha_cumprod[timesteps]) ** 0.5).flatten()
-        while len(sqrt_one_minus_alpha_prod) < len(original_samples):
+        # Expand dimensions to match original_samples shape
+        while len(sqrt_alpha_prod.shape) < len(original_samples.shape):
+            sqrt_alpha_prod = sqrt_alpha_prod.unsqueeze(-1)
             sqrt_one_minus_alpha_prod = sqrt_one_minus_alpha_prod.unsqueeze(-1)
-
-        noise = torch.randn(original_samples.shape,
-                            device=original_samples.device,
-                            dtype=original_samples.dtype,
-                            generator=self.generator)
-        # According to the equation in the paper, for DDPM
-        # mean = sqrt_alpha_prod * original_samples
-        # and simply follows X = mean + std * Z
-        noise_samples = sqrt_alpha_prod * original_samples + sqrt_one_minus_alpha_prod * noise
-        return noise_samples
+            
+        noise = torch.randn(original_samples.shape, device=original_samples.device,
+                          dtype=original_samples.dtype, generator=self.generator)
+        
+        return sqrt_alpha_prod * original_samples + sqrt_one_minus_alpha_prod * noise
 
     # To remove the noise, we use the prediction from the unet
     def remove_noise():
